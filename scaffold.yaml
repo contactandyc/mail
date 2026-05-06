@@ -1,0 +1,51 @@
+project_title: mail
+version: "0.1.1"
+description: "A dynamically scaffolded c/cmake_app project"
+stack: c/cmake_app
+date_created: 2026-05-06
+
+profile: default
+
+# ── 1. Scaffolding Engine Source ──
+base_templates:
+  repo: https://github.com/contactandyc/scaffold-templates.git
+  ref: main
+
+# ── Dynamic Setup Variables ──
+BUILD_VARIANT: "memory"
+ubuntu_tag: "22.04"
+cmake_version: "3.26.4"
+
+# ── 3. Licenses & Legal ──
+# license_profile: apache-2.0
+# license_overrides:
+#   "src/vendor/**": mit
+
+# ── 4. Dependencies ──
+depends_on:
+  - https://github.com/contactandyc/a-json-library.git
+  - https://github.com/contactandyc/a-memory-library.git
+  - https://github.com/contactandyc/h2o-c-library.git
+
+# ── 5. Main Executable (Auto-Discovered) ──
+# By default, all C/C++ files in src/ are compiled into an executable named 'my_app'.
+# You can override this behavior explicitly:
+# main:
+#   targets:
+#     - name: my_app
+#       sources:
+#         - src/main.c
+#       depends_on:
+#         - https://github.com/contactandyc/the-io-library.git
+
+# ── 6. Additional Apps & Tools (Optional) ──
+# apps:
+#   admin_tool:
+#     targets:
+#       - name: admin_cli
+#         sources:
+#           - src/admin.c
+
+# ── Feature Flags & Overrides ──
+# features:
+#   changie: true
