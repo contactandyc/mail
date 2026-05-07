@@ -25,8 +25,11 @@ cmake_version: "3.26.4"
 depends_on:
   - https://github.com/contactandyc/a-json-library.git
   - https://github.com/contactandyc/a-memory-library.git
+  - https://github.com/contactandyc/a-curl-library.git
+  - https://github.com/contactandyc/a-curl-gcloud-plugin.git
+  - https://github.com/contactandyc/the-io-library.git
   - https://github.com/contactandyc/h2o-c-library.git
-
+  - common/sqlite3
 # ── 5. Main Executable (Auto-Discovered) ──
 # By default, all C/C++ files in src/ are compiled into an executable named 'my_app'.
 # You can override this behavior explicitly:

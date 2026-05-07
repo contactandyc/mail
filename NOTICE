@@ -1,0 +1,32 @@
+mail
+© 2026 Andy Curtis <contactandyc@gmail.com>
+
+Maintainer: Andy Curtis <contactandyc@gmail.com>
+
+Licensed under Apache-2.0 (see LICENSE)
+
+H2O:
+This software uses H2O (https://github.com/h2o/h2o).
+H2O is licensed under the MIT License.
+Copyright (c) 2014-2016 DeNA Co., Ltd., Kazuho Oku, Fastly, Inc.
+
+LEXBOR HTML PARSER:
+This software uses the Lexbor HTML parser (https://github.com/lexbor/lexbor).
+Lexbor is licensed under the Apache License, Version 2.0.
+Copyright (c) Alexander Borisov.
+
+LIBJWT:
+This software uses libjwt (https://github.com/benmcollins/libjwt).
+libjwt is licensed under the Mozilla Public License Version 2.0.
+
+LIBUV:
+This software uses libuv (https://github.com/libuv/libuv).
+libuv is licensed under the MIT License.
+Copyright (c) 2015-present libuv project contributors.
+
+SQLITE:
+This software uses SQLite (https://sqlite.org/).
+The authors of SQLite have explicitly dedicated the code to the public domain.
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute the
+original SQLite code, either in source code form or as a compiled binary, for any
+purpose, commercial or non-commercial, and by any means.
