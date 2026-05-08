@@ -27,17 +27,25 @@ depends_on:
   - https://github.com/contactandyc/a-memory-library.git
   - https://github.com/contactandyc/a-curl-library.git
   - https://github.com/contactandyc/a-curl-gcloud-plugin.git
+  - https://github.com/contactandyc/an-oauth-library.git
   - https://github.com/contactandyc/the-io-library.git
   - https://github.com/contactandyc/h2o-c-library.git
   - common/sqlite3
 # ── 5. Main Executable (Auto-Discovered) ──
 # By default, all C/C++ files in src/ are compiled into an executable named 'my_app'.
 # You can override this behavior explicitly:
-# main:
-#   targets:
-#     - name: my_app
-#       sources:
-#         - src/main.c
+main:
+  targets:
+    - name: mail
+      sources:
+       - src/main.c
+       - src/db.c
+       - src/agent.c
+       - src/sync.c
+    - name: test_send
+      sources:
+        - src/test_send.c
+
 #       depends_on:
 #         - https://github.com/contactandyc/the-io-library.git
 

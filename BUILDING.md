@@ -261,3 +261,16 @@ cd ..
 rm -rf "a-curl-gcloud-plugin"
 ```
 
+### an-oauth-library
+
+Clone & build:
+
+```bash
+git clone --depth 1 --single-branch "https://github.com/contactandyc/an-oauth-library.git" "an-oauth-library"
+cd "an-oauth-library"
+./build.sh clean
+./build.sh install
+cd ..
+rm -rf "an-oauth-library"
+```
+

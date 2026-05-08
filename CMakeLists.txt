@@ -35,6 +35,7 @@ find_package(a_json_library CONFIG REQUIRED)
 find_package(a_memory_library CONFIG REQUIRED)
 find_package(a_curl_library CONFIG REQUIRED)
 find_package(a_curl_gcloud_plugin CONFIG REQUIRED)
+find_package(an_oauth_library CONFIG REQUIRED)
 find_package(the_io_library CONFIG REQUIRED)
 find_package(h2o_c_library CONFIG REQUIRED)
 
@@ -48,10 +49,14 @@ endif()
 
 add_executable(mail
   src/main.c
+  src/db.c
+  src/agent.c
+  src/sync.c
 )
 
 target_include_directories(mail PRIVATE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
 )
 
 set_target_properties(mail PROPERTIES
@@ -66,6 +71,7 @@ target_link_libraries(mail PRIVATE
   a_memory_library::a_memory_library
   a_curl_library::a_curl_library
   a_curl_gcloud_plugin::a_curl_gcloud_plugin
+  an_oauth_library::an_oauth_library
   the_io_library::the_io_library
   h2o_c_library::h2o_c_library
   sqlite3
@@ -77,6 +83,41 @@ target_compile_options(mail PRIVATE
 )
 
 install(TARGETS mail
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+add_executable(test_send
+  src/test_send.c
+)
+
+target_include_directories(test_send PRIVATE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+)
+
+set_target_properties(test_send PROPERTIES
+  C_STANDARD 23
+  C_STANDARD_REQUIRED YES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED YES
+)
+
+target_link_libraries(test_send PRIVATE
+  a_json_library::a_json_library
+  a_memory_library::a_memory_library
+  a_curl_library::a_curl_library
+  a_curl_gcloud_plugin::a_curl_gcloud_plugin
+  an_oauth_library::an_oauth_library
+  the_io_library::the_io_library
+  h2o_c_library::h2o_c_library
+  sqlite3
+)
+
+target_compile_options(test_send PRIVATE
+  $<$<CONFIG:Debug>:${_A_DEBUG_OPTS}>
+  $<$<NOT:$<CONFIG:Debug>>:${_A_RELEASE_OPTS}>
+)
+
+install(TARGETS test_send
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
