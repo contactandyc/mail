@@ -35,6 +35,12 @@ pick_generator() {
 }
 
 case "$COMMAND" in
+  unboot)
+    echo "-- Removing bootstrap artifacts --"
+    rm -rf repos .scaffold*
+    rm -rf "$BUILD_DIR"
+    echo "✅ Unboot complete."
+    ;;
   bootstrap)
     echo "--- Bootstrapping Hermetic Workspace ---"
 
@@ -112,7 +118,7 @@ case "$COMMAND" in
     ;;
 
   *)
-    echo "Usage: $0 [bootstrap|build|install|clean]" >&2
+    echo "Usage: $0 [bootstrap|unboot|build|install|clean]" >&2
     exit 1
     ;;
 esac
