@@ -1,9 +1,3 @@
-That makes complete sense. Stripping out the marketing fluff and framing it accurately as an educational proof-of-concept gives it a much better, more authentic tone.
-
-Here is a revised `README.md` that frames the project as a sample application demonstrating asynchronous queues and API triage patterns.
-
-***
-
 # Gmail Sync & Active Agent Demo (`mail`)
 
 This is a sample asynchronous C daemon designed to demonstrate how to monitor, triage, and locally mirror a Google Workspace / Gmail inbox.
