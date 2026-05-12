@@ -5,6 +5,7 @@
 #include <string.h>
 #include <time.h>
 #include <stdio.h>
+#include <ctype.h>
 
 static bool has_label(const gcloud_v1_gmail_message_t *msg, const char *label) {
     if (!msg || !msg->label_ids) return false;
@@ -14,30 +15,31 @@ static bool has_label(const gcloud_v1_gmail_message_t *msg, const char *label) {
     return false;
 }
 
+// Ensures "SA" is a standalone word (ignores "USA", "SAMPLE", etc.)
 static bool is_standalone_sa(const char *subject) {
     if (!subject) return false;
-    // Exact match
-    if (strcmp(subject, "SA") == 0) return true;
-    // Starts with "SA "
-    if (strncmp(subject, "SA ", 3) == 0) return true;
-    // Contains " SA "
-    if (strstr(subject, " SA ") != NULL) return true;
+    const char *p = subject;
 
-    // Ends with " SA"
-    size_t len = strlen(subject);
-    if (len > 3 && strcmp(subject + len - 3, " SA") == 0) return true;
+    while ((p = strstr(p, "SA")) != NULL) {
+        // Ensure character before is NOT a letter (e.g., 'U' in USA)
+        bool start_ok = (p == subject) || !isalpha(*(p - 1));
+        // Ensure character after is NOT a letter (e.g., 'M' in SAMPLE)
+        bool end_ok = (*(p + 2) == '\0') || !isalpha(*(p + 2));
 
+        if (start_ok && end_ok) return true;
+        p += 2; // Advance past "SA"
+    }
     return false;
 }
 
 bool agent_should_trash(const gcloud_v1_gmail_message_t *msg) {
+    return false; // FOR RIGHT NOW, SKIP THIS!
     if (!msg) return false;
-    return false; // for now!
 
     // Rule 1: Kill the noise
     if (msg->subject) {
         if (strstr(msg->subject, "AMZN:") != NULL || is_standalone_sa(msg->subject)) {
-            printf("[Agent] Matched spam filter: %.30s...\n", msg->subject);
+            printf("[Agent] Matched keyword filter: %.30s...\n", msg->subject);
             return true;
         }
     }

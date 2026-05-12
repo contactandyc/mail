@@ -26,6 +26,7 @@ typedef struct {
     sqlite3 *db;
     int active_ops;
     uint64_t history_id;
+    bool daemon_mode;
 } sync_ctx_t;
 
 typedef struct {
@@ -33,9 +34,23 @@ typedef struct {
     char *id;
 } fetch_ctx_t;
 
+static sync_ctx_t g_sync_ctx = {0};
+
 static void sync_tick(sync_ctx_t *ctx);
 static void start_discovery_page(sync_ctx_t *ctx, const char *page_token);
-static void start_delta_sync(sync_ctx_t *ctx, const char *page_token);
+static void start_delta_sync(sync_ctx_t *ctx, const char *page_token, int priority);
+static void start_fetch_profile(sync_ctx_t *ctx);
+
+// ============================================================================
+// SHARED AUTH
+// ============================================================================
+static bool inject_auth(curl_event_request_t *req) {
+    const gcloud_token_payload_t *tok = curl_event_res_peek(req->loop, GMAIL_TOKEN_RES_ID);
+    if (!tok || !tok->access_token) return false;
+    char auth[512]; snprintf(auth, sizeof(auth), "Bearer %s", tok->access_token);
+    curl_event_request_set_header(req, "Authorization", auth);
+    return true;
+}
 
 // ============================================================================
 // PHASE 3: HYDRATION (Download Body)
@@ -50,7 +65,7 @@ static void on_hydration_complete(void *arg, curl_event_request_t *req, bool suc
         db_save_message_full(ctx->db, msg);
         printf("[Hydration] Saved complete email: %.40s\n", msg->subject ? msg->subject : id);
     } else if (!success) {
-        db_requeue_hydration(ctx->db, id); // Network failed, put it back
+        printf("[Hydration] Failed to fetch %s. Dropping from queue.\n", id);
     }
 
     free(id);
@@ -70,8 +85,6 @@ static void on_triage_complete(void *arg, curl_event_request_t *req, bool succes
     ctx->active_ops--;
 
     if (success && msg) {
-        printf("[Triage] Downloaded metadata for %s. Analyzing...\n", id);
-
         if (agent_should_trash(msg)) {
             curl_event_request_t *trash_req = gcloud_v1_gmail_messages_trash_init(
                 ctx->loop, GMAIL_TOKEN_RES_ID, gcloud_v1_gmail_endpoint(), "me", id);
@@ -82,9 +95,10 @@ static void on_triage_complete(void *arg, curl_event_request_t *req, bool succes
             printf("[Agent] TRASHED -> %s\n", id);
         } else {
             db_move_triage_to_hydration(ctx->db, id);
+            printf("[Triage] Passed checks. Queued for hydration -> %s\n", id);
         }
     } else if (!success) {
-        db_requeue_triage(ctx->db, id); // Network failed, put it back
+        printf("[Triage] Failed to fetch metadata for %s. Dropping from queue.\n", id);
     }
 
     free(id);
@@ -97,18 +111,15 @@ static void on_triage_complete(void *arg, curl_event_request_t *req, bool succes
 // ============================================================================
 static void sync_tick(sync_ctx_t *ctx) {
     while (ctx->active_ops < MAX_CONCURRENT_OPS) {
-
         char *triage_id = db_pop_pending_triage(ctx->db);
         if (triage_id) {
             fetch_ctx_t *fctx = malloc(sizeof(fetch_ctx_t));
             fctx->ctx = ctx; fctx->id = triage_id;
-
             curl_event_request_t *req = gcloud_v1_gmail_messages_get_init(
                 ctx->loop, GMAIL_TOKEN_RES_ID, gcloud_v1_gmail_endpoint(), "me", triage_id);
             gcloud_v1_gmail_messages_get_set_format(req, "metadata");
             gcloud_v1_gmail_message_get_sink(req, false, on_triage_complete, fctx);
             gcloud_v1_gmail_submit(ctx->loop, req, 20);
-
             ctx->active_ops++;
             continue;
         }
@@ -117,18 +128,62 @@ static void sync_tick(sync_ctx_t *ctx) {
         if (hydrate_id) {
             fetch_ctx_t *fctx = malloc(sizeof(fetch_ctx_t));
             fctx->ctx = ctx; fctx->id = hydrate_id;
-
             curl_event_request_t *req = gcloud_v1_gmail_messages_get_init(
                 ctx->loop, GMAIL_TOKEN_RES_ID, gcloud_v1_gmail_endpoint(), "me", hydrate_id);
             gcloud_v1_gmail_messages_get_set_format(req, "full");
             gcloud_v1_gmail_message_get_sink(req, true, on_hydration_complete, fctx);
             gcloud_v1_gmail_submit(ctx->loop, req, 20);
-
             ctx->active_ops++;
             continue;
         }
         break;
     }
+
+    if (ctx->active_ops == 0) {
+        if (ctx->daemon_mode) {
+            printf("[Engine] Queues clear. Polling Gmail in 15 seconds...\n");
+            start_delta_sync(ctx, NULL, -15);
+        } else {
+            printf("[Engine] Sync complete. Queues clear.\n");
+        }
+    }
+}
+
+// ============================================================================
+// PHASE 1.5: FETCH PROFILE (Get Real History ID)
+// ============================================================================
+static void on_profile_complete(char *data, size_t length, bool success, CURLcode result, long http_code, const char *error_msg, void *arg, curl_event_request_t *req) {
+    sync_ctx_t *ctx = (sync_ctx_t *)arg;
+    ctx->active_ops--;
+
+    if (success && http_code == 200) {
+        ajson_t *json = ajson_parse_string(req->pool, data);
+        if (!ajson_is_error(json)) {
+            const char *hid_str = ajsono_scan_str(json, "historyId", NULL);
+            if (hid_str) {
+                ctx->history_id = strtoull(hid_str, NULL, 10);
+                db_set_history_id(ctx->db, ctx->history_id);
+                printf("[Discovery] Captured current historyId: %llu\n", ctx->history_id);
+            }
+        }
+    } else {
+        printf("[Discovery] Failed to capture profile. Re-trying Discovery on next boot.\n");
+    }
+    sync_tick(ctx);
+}
+
+static void start_fetch_profile(sync_ctx_t *ctx) {
+    char url[1024];
+    snprintf(url, sizeof(url), "%s/gmail/v1/users/me/profile", gcloud_v1_gmail_endpoint());
+
+    curl_event_request_t *req = curl_event_request_build_get(url, NULL, NULL);
+    curl_event_request_rate_limit(req, "gmail_api", true);
+    curl_event_request_depend(req, GMAIL_TOKEN_RES_ID);
+    curl_event_request_on_prepare(req, inject_auth);
+    memory_sink(req, on_profile_complete, ctx);
+
+    curl_event_loop_submit(ctx->loop, req, 20);
+    ctx->active_ops++;
 }
 
 // ============================================================================
@@ -152,9 +207,8 @@ static void on_discovery_complete(void *arg, curl_event_request_t *req, bool suc
         printf("[Discovery] Complete! Reconciling local state...\n");
         db_reconcile_remote_state(ctx->db);
 
-        ctx->history_id = 1;
-        db_set_history_id(ctx->db, 1);
-        sync_tick(ctx);
+        // FIX: Fetch the REAL history ID instead of hardcoding 1
+        start_fetch_profile(ctx);
     } else {
         printf("[Discovery] Network failed. Sleeping...\n");
     }
@@ -163,7 +217,7 @@ static void on_discovery_complete(void *arg, curl_event_request_t *req, bool suc
 static void start_discovery_page(sync_ctx_t *ctx, const char *page_token) {
     curl_event_request_t *req = gcloud_v1_gmail_messages_list_init(ctx->loop, GMAIL_TOKEN_RES_ID, gcloud_v1_gmail_endpoint(), "me");
     gcloud_v1_gmail_messages_list_set_max_results(req, 500);
-    gcloud_v1_gmail_messages_list_set_query(req, "-in:trash -in:spam");
+    gcloud_v1_gmail_messages_list_set_query(req, "-in:trash%20-in:spam");
 
     if (page_token) gcloud_v1_gmail_messages_list_set_page_token(req, page_token);
     gcloud_v1_gmail_messages_list_sink(req, on_discovery_complete, ctx);
@@ -173,14 +227,6 @@ static void start_discovery_page(sync_ctx_t *ctx, const char *page_token) {
 // ============================================================================
 // DELTA SYNC (history.list)
 // ============================================================================
-static bool inject_auth(curl_event_request_t *req) {
-    const gcloud_token_payload_t *tok = curl_event_res_peek(req->loop, GMAIL_TOKEN_RES_ID);
-    if (!tok || !tok->access_token) return false;
-    char auth[512]; snprintf(auth, sizeof(auth), "Bearer %s", tok->access_token);
-    curl_event_request_set_header(req, "Authorization", auth);
-    return true;
-}
-
 static void on_delta_complete(char *data, size_t length, bool success, CURLcode result, long http_code, const char *error_msg, void *arg, curl_event_request_t *req) {
     sync_ctx_t *ctx = (sync_ctx_t *)arg;
     ctx->active_ops--;
@@ -203,7 +249,13 @@ static void on_delta_complete(char *data, size_t length, bool success, CURLcode 
                 for (ajsona_t *a = ajsona_first(added); a; a = ajsona_next(a)) {
                     ajson_t *msg = ajsono_scan(a->value, "message");
                     const char *id = msg ? ajsono_scan_str(msg, "id", NULL) : NULL;
-                    if (id) db_requeue_triage(ctx->db, id);
+
+                    if (id) {
+                        sqlite3_stmt *stmt;
+                        if (sqlite3_prepare_v2(ctx->db, "INSERT OR IGNORE INTO pending_triage (id) VALUES (?)", -1, &stmt, NULL) == SQLITE_OK) {
+                            sqlite3_bind_text(stmt, 1, id, -1, SQLITE_STATIC); sqlite3_step(stmt); sqlite3_finalize(stmt);
+                        }
+                    }
                 }
             }
             ajson_t *deleted = ajsono_scan(h->value, "messagesDeleted");
@@ -228,13 +280,13 @@ static void on_delta_complete(char *data, size_t length, bool success, CURLcode 
 
     const char *npt = ajsono_scan_str(json, "nextPageToken", NULL);
     if (npt) {
-        start_delta_sync(ctx, npt);
+        start_delta_sync(ctx, npt, 10);
     } else {
         sync_tick(ctx);
     }
 }
 
-static void start_delta_sync(sync_ctx_t *ctx, const char *page_token) {
+static void start_delta_sync(sync_ctx_t *ctx, const char *page_token, int priority) {
     char url[1024];
     snprintf(url, sizeof(url), "%s/gmail/v1/users/me/history?startHistoryId=%llu", gcloud_v1_gmail_endpoint(), ctx->history_id);
     if (page_token) snprintf(url + strlen(url), sizeof(url) - strlen(url), "&pageToken=%s", page_token);
@@ -244,15 +296,29 @@ static void start_delta_sync(sync_ctx_t *ctx, const char *page_token) {
     curl_event_request_depend(req, GMAIL_TOKEN_RES_ID);
     curl_event_request_on_prepare(req, inject_auth);
     memory_sink(req, on_delta_complete, ctx);
-    
-    curl_event_loop_submit(ctx->loop, req, 10);
+
+    curl_event_loop_submit(ctx->loop, req, priority);
     ctx->active_ops++;
 }
 
-void sync_start(curl_event_loop_t *loop, sqlite3 *db) {
-    sync_ctx_t *ctx = aml_zalloc(sizeof(sync_ctx_t));
-    ctx->loop = loop; ctx->db = db; ctx->active_ops = 0;
+void sync_start(curl_event_loop_t *loop, sqlite3 *db, bool daemon_mode) {
+    sync_ctx_t *ctx = &g_sync_ctx;
+    ctx->loop = loop;
+    ctx->db = db;
+    ctx->active_ops = 0;
     ctx->history_id = db_get_history_id(db);
+    ctx->daemon_mode = daemon_mode;
+
+    uint64_t saved_count   = db_get_table_count(db, "messages");
+    uint64_t triage_count  = db_get_table_count(db, "pending_triage");
+    uint64_t hydrate_count = db_get_table_count(db, "pending_hydration");
+
+    printf("\n=============================================\n");
+    printf("[System] Booting Gmail Sync Engine\n");
+    printf("         Fully Saved Emails : %llu\n", saved_count);
+    printf("         Pending Triage     : %llu\n", triage_count);
+    printf("         Pending Hydration  : %llu\n", hydrate_count);
+    printf("=============================================\n\n");
 
     char *resume_check = db_pop_pending_triage(db);
     if (!resume_check) resume_check = db_pop_pending_hydration(db);
@@ -267,6 +333,6 @@ void sync_start(curl_event_loop_t *loop, sqlite3 *db) {
         start_discovery_page(ctx, NULL);
     } else {
         printf("[Engine] Booting Delta Sync...\n");
-        start_delta_sync(ctx, NULL);
+        start_delta_sync(ctx, NULL, 10);
     }
 }

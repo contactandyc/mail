@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 
 #include "a-curl-library/curl_event_loop.h"
 #include "a-curl-library/rate_manager.h"
@@ -21,7 +22,57 @@
 
 #define GMAIL_TOKEN_RES_ID 100
 
-// Web-safe Base64 encoder for the startup email
+// ============================================================================
+// REPL MODE
+// ============================================================================
+
+static int repl_row_callback(void *NotUsed, int argc, char **argv, char **azColName) {
+    for (int i = 0; i < argc; i++) {
+        printf("%s = %s\n", azColName[i], argv[i] ? argv[i] : "NULL");
+    }
+    printf("\n");
+    return 0;
+}
+
+static void run_sql_repl(sqlite3 *db) {
+    char line[4096];
+    char query[16384] = "";
+    char *errmsg = NULL;
+
+    printf("=============================================\n");
+    printf(" Interactive SQLite REPL Mode\n");
+    printf(" Connected to mail.db\n");
+    printf(" Type '.quit' or '.exit' to leave.\n");
+    printf("=============================================\n\n");
+
+    while (1) {
+        if (strlen(query) == 0) printf("sqlite> ");
+        else printf("   ...> ");
+
+        if (!fgets(line, sizeof(line), stdin)) break;
+
+        if (strncmp(line, ".quit", 5) == 0 || strncmp(line, ".exit", 5) == 0) break;
+
+        if (strlen(query) == 0 && (strcmp(line, "\n") == 0 || strcmp(line, "\r\n") == 0)) continue;
+
+        strncat(query, line, sizeof(query) - strlen(query) - 1);
+
+        if (strchr(query, ';')) {
+            int rc = sqlite3_exec(db, query, repl_row_callback, 0, &errmsg);
+            if (rc != SQLITE_OK) {
+                fprintf(stderr, "SQL Error: %s\n\n", errmsg);
+                sqlite3_free(errmsg);
+            }
+            query[0] = '\0';
+        }
+    }
+    printf("Exiting REPL...\n");
+}
+
+// ============================================================================
+// DAEMON UTILS
+// ============================================================================
+
 static char *b64enc_websafe(aml_pool_t *pool, const void *data, size_t len) {
     static const char *enc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     size_t out_len = ((len + 2)/3)*4;
@@ -66,7 +117,31 @@ static void send_startup_email(curl_event_loop_t *loop) {
     printf("[Agent] Startup confirmation email queued for delivery.\n");
 }
 
+// ============================================================================
+// MAIN ENTRY
+// ============================================================================
+
 int main(int argc, char **argv) {
+    bool repl_mode = false;
+    bool daemon_mode = false;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--sql") == 0) repl_mode = true;
+        if (strcmp(argv[i], "--daemon") == 0) daemon_mode = true;
+    }
+
+    sqlite3 *db = db_init("mail.db");
+    if (!db) {
+        fprintf(stderr, "FATAL: Could not open mail.db.\n");
+        return 1;
+    }
+
+    if (repl_mode) {
+        run_sql_repl(db);
+        sqlite3_close(db);
+        return 0;
+    }
+
     const char *config_file = "config.json";
     const char *creds_file = "credentials.json";
     const char *required_scopes = "https://mail.google.com/";
@@ -98,9 +173,6 @@ int main(int argc, char **argv) {
     rate_manager_init();
     rate_manager_set_limit("gmail_api", 50, 1000.0);
 
-    sqlite3 *db = db_init("mail.db");
-    if (!db) return 1;
-
     curl_event_loop_t *loop = curl_event_loop_init(NULL, NULL);
 
     if (!curl_event_plugin_gcloud_token_init(loop, config_file, GMAIL_TOKEN_RES_ID, true)) {
@@ -109,9 +181,14 @@ int main(int argc, char **argv) {
     }
 
     send_startup_email(loop);
-    sync_start(loop, db);
+    sync_start(loop, db, daemon_mode);
 
-    printf("[System] Daemon is running.\n");
+    if (daemon_mode) {
+        printf("[System] Running in DAEMON mode. Press Ctrl+C to stop.\n");
+    } else {
+        printf("[System] Running in ONE-SHOT mode. Will exit when queues are clear.\n");
+    }
+
     curl_event_loop_run(loop);
 
     curl_event_loop_destroy(loop);

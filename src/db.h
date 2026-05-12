@@ -30,4 +30,7 @@ void db_requeue_hydration(sqlite3 *db, const char *id);
 void db_save_message_full(sqlite3 *db, const gcloud_v1_gmail_message_t *msg);
 void db_delete_message(sqlite3 *db, const char *id);
 
+// Count
+uint64_t db_get_table_count(sqlite3 *db, const char *table_name);
+
 #endif

@@ -6,7 +6,8 @@
 
 #include "a-curl-library/curl_event_loop.h"
 #include <sqlite3.h>
+#include <stdbool.h>
 
-void sync_start(curl_event_loop_t *loop, sqlite3 *db);
+void sync_start(curl_event_loop_t *loop, sqlite3 *db, bool daemon_mode);
 
 #endif

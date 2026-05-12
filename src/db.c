@@ -13,7 +13,8 @@ static const char *SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY);"
     "CREATE TABLE IF NOT EXISTS messages ("
     "    id TEXT PRIMARY KEY, thread_id TEXT, internal_date INTEGER,"
-    "    subject TEXT, from_name TEXT, from_email TEXT, snippet TEXT, list_id TEXT, delivered_to TEXT, is_group INTEGER,"
+    "    subject TEXT, from_name TEXT, from_email TEXT, snippet TEXT, "
+    "    list_id TEXT, delivered_to TEXT, is_group INTEGER, body TEXT," // <-- ADDED 'body TEXT'
     "    FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE"
     ");"
     "CREATE TABLE IF NOT EXISTS message_labels ("
@@ -28,6 +29,7 @@ static const char *SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS remote_state (id TEXT PRIMARY KEY);"
     "CREATE TABLE IF NOT EXISTS pending_triage (id TEXT PRIMARY KEY);"
     "CREATE TABLE IF NOT EXISTS pending_hydration (id TEXT PRIMARY KEY);";
+
 
 sqlite3 *db_init(const char *path) {
     sqlite3 *db = NULL;
@@ -124,25 +126,72 @@ void db_save_message_full(sqlite3 *db, const gcloud_v1_gmail_message_t *msg) {
     sqlite3_exec(db, "BEGIN TRANSACTION;", NULL, NULL, NULL);
 
     sqlite3_stmt *stmt;
+
+    // 1. Save Thread
     if (sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO threads (id) VALUES (?)", -1, &stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, msg->thread_id, -1, SQLITE_STATIC);
         sqlite3_step(stmt); sqlite3_finalize(stmt);
     }
 
-    if (sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO messages (id, thread_id, internal_date, subject, from_name, from_email, snippet) VALUES (?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL) == SQLITE_OK) {
+    // 2. Save Message (Now with 11 columns, including the Body and List IDs)
+    const char *msg_sql = "INSERT OR REPLACE INTO messages "
+                          "(id, thread_id, internal_date, subject, from_name, from_email, snippet, list_id, delivered_to, is_group, body) "
+                          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+    if (sqlite3_prepare_v2(db, msg_sql, -1, &stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, msg->id, -1, SQLITE_STATIC);
         sqlite3_bind_text(stmt, 2, msg->thread_id, -1, SQLITE_STATIC);
         sqlite3_bind_int64(stmt, 3, msg->internal_date);
         sqlite3_bind_text(stmt, 4, msg->subject, -1, SQLITE_STATIC);
+
         if (msg->from && msg->from->email) {
             sqlite3_bind_text(stmt, 5, msg->from->name, -1, SQLITE_STATIC);
             sqlite3_bind_text(stmt, 6, msg->from->email, -1, SQLITE_STATIC);
         } else {
             sqlite3_bind_null(stmt, 5); sqlite3_bind_null(stmt, 6);
         }
+
         sqlite3_bind_text(stmt, 7, msg->snippet, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 8, msg->list_id, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 9, msg->delivered_to, -1, SQLITE_STATIC);
+        sqlite3_bind_int(stmt, 10, msg->is_group ? 1 : 0);
+
+        if (msg->body_data && msg->body_len > 0) {
+            sqlite3_bind_text(stmt, 11, (const char *)msg->body_data, msg->body_len, SQLITE_STATIC);
+        } else {
+            sqlite3_bind_null(stmt, 11);
+        }
+
         sqlite3_step(stmt); sqlite3_finalize(stmt);
     }
+
+    // 3. Save Labels
+    if (msg->num_labels > 0 && msg->label_ids) {
+        if (sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO message_labels (message_id, label_id) VALUES (?, ?)", -1, &stmt, NULL) == SQLITE_OK) {
+            for (size_t i = 0; i < msg->num_labels; i++) {
+                sqlite3_bind_text(stmt, 1, msg->id, -1, SQLITE_STATIC);
+                sqlite3_bind_text(stmt, 2, msg->label_ids[i], -1, SQLITE_STATIC);
+                sqlite3_step(stmt); sqlite3_reset(stmt);
+            }
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    // 4. Save Attachment Metadata (file_data BLOB remains NULL until you explicitly download the attachment later)
+    if (msg->num_attachments > 0 && msg->attachments) {
+        if (sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO message_attachments (message_id, attachment_id, filename, mime_type, file_size) VALUES (?, ?, ?, ?, ?)", -1, &stmt, NULL) == SQLITE_OK) {
+            for (size_t i = 0; i < msg->num_attachments; i++) {
+                sqlite3_bind_text(stmt, 1, msg->id, -1, SQLITE_STATIC);
+                sqlite3_bind_text(stmt, 2, msg->attachments[i].attachment_id, -1, SQLITE_STATIC);
+                sqlite3_bind_text(stmt, 3, msg->attachments[i].filename, -1, SQLITE_STATIC);
+                sqlite3_bind_text(stmt, 4, msg->attachments[i].mime_type, -1, SQLITE_STATIC);
+                sqlite3_bind_int64(stmt, 5, msg->attachments[i].size);
+                sqlite3_step(stmt); sqlite3_reset(stmt);
+            }
+            sqlite3_finalize(stmt);
+        }
+    }
+
     sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
 }
 
@@ -158,4 +207,22 @@ void db_delete_message(sqlite3 *db, const char *id) {
     if (sqlite3_prepare_v2(db, "DELETE FROM pending_hydration WHERE id = ?", -1, &stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, id, -1, SQLITE_STATIC); sqlite3_step(stmt); sqlite3_finalize(stmt);
     }
+}
+
+uint64_t db_get_table_count(sqlite3 *db, const char *table_name) {
+    char sql[256];
+    // Note: table_name must be a trusted, hardcoded string to avoid SQL injection
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM %s;", table_name);
+
+    sqlite3_stmt *stmt;
+    uint64_t count = 0;
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            count = (uint64_t)sqlite3_column_int64(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    return count;
 }
